@@ -98,8 +98,8 @@ where
 // 上記のようにトレイト定義をマクロに入力すると、そのトレイト定義を行って以下のようなコードを生成する
 
 
-// 入力された定義に合わせた{入力マクロ名}+Tapleという名前の、入力マクロに似せた「タプル用トレイト」の定義を生成
-pub trait ProcessorTaple<const N: usize, T, W>
+// 入力された定義に合わせた{入力マクロ名}+Tupleという名前の、入力マクロに似せた「タプル用トレイト」の定義を生成
+pub trait ProcessorTuple<const N: usize, T, W>
 where
     W: Sized + Default,
 {
@@ -109,7 +109,7 @@ where
     fn no_ret(&self) -> [(); N];
 }
 // #[gtuple(2, 3)]で指定された下限と上限の間にあるNに関して、次のようにタプル用トレイトをタプルに実装する
-impl<T0, T1, T, W> ProcessorTaple<2, T, W> for (T0, T1)
+impl<T0, T1, T, W> ProcessorTuple<2, T, W> for (T0, T1)
 where
     T0: Processor<T, W>,
     T1: Processor<T, W>,
@@ -128,7 +128,7 @@ where
         [self.0.no_ret(), self.1.no_ret()]
     }
 }
-impl<T0, T1, T2, T, W> ProcessorTaple<3, T, W> for (T0, T1, T2)
+impl<T0, T1, T2, T, W> ProcessorTuple<3, T, W> for (T0, T1, T2)
 where
     T0: Processor<T, W>,
     T1: Processor<T, W>,
