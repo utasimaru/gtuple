@@ -31,7 +31,7 @@ impl Worker for Human { /* ... */ }
 
 // 3. まとめて呼び出す
 fn main() {
-    let team = (Robot, Human);
+    let team = (Robot::new(), Human::new());
 
     // [String; 2] としてそれぞれの結果が返ってくる！
     let results: [String; 2] = team.do_work(8); 
