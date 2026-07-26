@@ -13,7 +13,7 @@
 
 使用例イメージ
 ```Rust
-use tuple_macro::gtuple;
+use gtuple::gtuple;
 
 // 1. トレイトにマクロを付与する (N = 2〜3 のタプル実装を生成)
 #[gtuple(2, 3)]
