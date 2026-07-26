@@ -40,3 +40,117 @@ fn main() {
     team.rest(); 
 }
 ```
+# 原理
+バニラコードでも、次のようにトレイトと、トレイトのタプルが実装すべきトレイトを定義することで、一括でトレイトの関数を実行できるようになります。
+```Rust
+// [step 0] タプルで呼び出せる用にしたいトレイト
+pub trait Processor {
+    fn execute(&mut self, arg: i32) -> i32;
+}
+// [step 1] 元トレイトに似せたタプル用トレイトを定義
+pub trait ProcessorTuple<const N: usize> {
+    fn execute(&mut self, arg: i32) -> [i32; N];
+}
+// [step 2] このように書くと、タプルから一括で関数を呼び出し、結果を受け取れる(ここでは２個と３個のタプルについて定義)
+impl<T0, T1> ProcessorTuple<2> for (T0, T1)
+where
+    T0: Processor, // step 0 のトレイトを実装した型
+    T1: Processor,
+{
+    fn execute(&mut self, arg: i32) -> [i32; 2] {
+        [self.0.execute(arg), self.1.execute(arg)]
+    }
+}
+impl<T0, T1, T2> ProcessorTuple<3> for (T0, T1, T2)
+where
+    T0: Processor, // step 0 のトレイトを実装した型
+    T1: Processor,
+    T2: Processor,
+{
+    fn execute(&mut self, arg: i32) -> [i32; 3] {
+        [
+            self.0.execute(arg),
+            self.1.execute(arg),
+            self.2.execute(arg),
+        ]
+    }
+}
+```
+
+# マクロ定義はGeminiに丸投げ
+私は手続きマクロを書けない(勉強したくない)ので、Geminiに丸投げしました。次のコードを張り付け、「コメントに指定した要件を満たす手続きマクロ"gtuple"を作成してください」
+```Rust
+
+#[gtuple(2, 3)]
+pub trait Processor<T, W>
+where
+    W: Sized + Default,
+{
+    fn t_some(&self, arg: &T) -> W;
+    fn lifetime<'a, A>(&self) -> &'a mut A;
+    fn num_some(&mut self, num: usize) -> usize;
+    fn no_ret(&self);
+    fn new(arg: u32); //staticメソッドは、タプル用トレイトに含めない
+    fn move_any(&self, vec: Vec<usize>); // 所有権が移動する入力を持つ場合は、タプル用トレイトに含めない
+    #[skip_gtuple]
+    fn ignore(&self); //skipを指定されたメソッドも、タプル用トレイトに含めない
+}
+// 上記のようにトレイト定義をマクロに入力すると、そのトレイト定義を行って以下のようなコードを生成する
+
+
+// 入力された定義に合わせた{入力マクロ名}+Tapleという名前の、入力マクロに似せた「タプル用トレイト」の定義を生成
+pub trait ProcessorTaple<const N: usize, T, W>
+where
+    W: Sized + Default,
+{
+    fn t_some(&self, arg: &T) -> [W; N];
+    fn lifetime<'a, A>(&self) -> [&'a mut A; N];
+    fn num_some(&mut self, num: usize) -> [usize; N];
+    fn no_ret(&self) -> [(); N];
+}
+// #[gtuple(2, 3)]で指定された下限と上限の間にあるNに関して、次のようにタプル用トレイトをタプルに実装する
+impl<T0, T1, T, W> ProcessorTaple<2, T, W> for (T0, T1)
+where
+    T0: Processor<T, W>,
+    T1: Processor<T, W>,
+    W: Sized + Default,
+{
+    fn t_some(&self, arg: &T) -> [W; 2] {
+        [self.0.t_some(arg), self.1.t_some(arg)]
+    }
+    fn lifetime<'a, A>(&self) -> [&'a mut A; 2] {
+        [self.0.lifetime(), self.1.lifetime()]
+    }
+    fn num_some(&mut self, num: usize) -> [usize; 2] {
+        [self.0.num_some(num), self.1.num_some(num)]
+    }
+    fn no_ret(&self) -> [(); 2] {
+        [self.0.no_ret(), self.1.no_ret()]
+    }
+}
+impl<T0, T1, T2, T, W> ProcessorTaple<3, T, W> for (T0, T1, T2)
+where
+    T0: Processor<T, W>,
+    T1: Processor<T, W>,
+    T2: Processor<T, W>,
+    W: Sized + Default,
+{
+    fn t_some(&self, arg: &T) -> [W; 3] {
+        [self.0.t_some(arg), self.1.t_some(arg), self.2.t_some(arg)]
+    }
+    fn lifetime<'a, A>(&self) -> [&'a mut A; 3] {
+        [self.0.lifetime(), self.1.lifetime(), self.2.lifetime()]
+    }
+    fn num_some(&mut self, num: usize) -> [usize; 3] {
+        [
+            self.0.num_some(num),
+            self.1.num_some(num),
+            self.2.num_some(num),
+        ]
+    }
+    fn no_ret(&self) -> [(); 3] {
+        [self.0.no_ret(), self.1.no_ret(), self.2.no_ret()]
+    }
+}
+
+```
