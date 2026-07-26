@@ -55,11 +55,11 @@ fn is_unsized_or_unmappable_type(ty: &syn::Type) -> bool {
 
 // ★ 修正: 引数を TraitItemFn 全体に変更し、属性もチェックする
 fn should_skip_method(method: &syn::TraitItemFn) -> bool {
-    // 0. 明示的なスキップ属性 `#[tuple_skip]` がある場合は除外
+    // 0. 明示的なスキップ属性 `#[skip_gtuple]` がある場合は除外
     if method
         .attrs
         .iter()
-        .any(|attr| attr.path().is_ident("tuple_skip"))
+        .any(|attr| attr.path().is_ident("skip_gtuple"))
     {
         return true;
     }
@@ -119,7 +119,7 @@ impl Parse for RangeArgs {
 }
 
 #[proc_macro_attribute]
-pub fn generate_tuple(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as RangeArgs);
     let min_n = args.start;
     let max_n = args.end;
@@ -174,10 +174,10 @@ pub fn generate_tuple(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             method.default = None;
 
-            // タプルトレイト側にコピーされたメソッドからは、念のため `tuple_skip` 属性を消去しておく
+            // タプルトレイト側にコピーされたメソッドからは、念のため `skip_gtuple` 属性を消去しておく
             method
                 .attrs
-                .retain(|attr| !attr.path().is_ident("tuple_skip"));
+                .retain(|attr| !attr.path().is_ident("skip_gtuple"));
 
             true
         } else {
@@ -243,7 +243,7 @@ pub fn generate_tuple(attr: TokenStream, item: TokenStream) -> TokenStream {
                     quote! { [ #( self.#indices.#method_ident( #args_tokens ) ),* ] }
                 };
 
-                // ★ 実装メソッドからも `tuple_skip` 属性を取り除く
+                // ★ 実装メソッドからも `skip_gtuple` 属性を取り除く
                 new_sig.inputs = new_sig.inputs.into_iter().collect(); // (形式的な変換)
 
                 methods.push(quote! {
@@ -265,13 +265,13 @@ pub fn generate_tuple(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
     }
 
-    // ★ 仕上げ: 元のトレイトから `#[tuple_skip]` 属性を取り除く
+    // ★ 仕上げ: 元のトレイトから `#[skip_gtuple]` 属性を取り除く
     // そのまま出力するとコンパイラが「そんな属性知らないよ」とエラーにするため
     for item in &mut input_trait.items {
         if let TraitItem::Fn(method) = item {
             method
                 .attrs
-                .retain(|attr| !attr.path().is_ident("tuple_skip"));
+                .retain(|attr| !attr.path().is_ident("skip_gtuple"));
         }
     }
 
