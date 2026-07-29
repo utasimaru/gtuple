@@ -7,7 +7,7 @@ edition = "2024"
 # crates.io 公開用の必須・推奨メタデータ
 # --------------------------------------------------
 description = "A proc-macro attribute to distribute trait methods over tuples of references."
-license = "MIT OR Apache-2.0"
+license = "MIT"
 authors = ["utasimaru <utasimaru@yahoo.co.jp>"] 
 repository = "https://github.com/utasimaru/gtuple_monomorphization" 
 readme = "README.md" 
