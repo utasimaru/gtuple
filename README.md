@@ -1,168 +1,109 @@
-# gtuple
-このマクロは、Rustにおける「複数の異なる型のインスタンスをまとめたタプルに対して、同じトレイトのメソッドを一括で呼び出せるようにするコード」を自動生成するための手続き的マクロです。 
+# gtuple_monomorphization
 
-通常、異なる型をまとめたタプル（例：(Robot, Human)）に対して共通の操作をしようとすると、個別に処理を書くか、専用のラッパー構造体を用意する必要があります。
+`gtuple_monomorphization` は、トレイトのメソッドを「参照のタプル」に対して一括で処理（ディストリビュート）し、戻り値がある場合は固定長配列 `[T; N]` として取得できるようにする手続き的マクロ（Attribute Macro）です。
 
-このマクロをトレイト定義に付与するだけで、その面倒なボイラープレートコードを完全に自動化できます。
+## 特徴
 
-# 主な機能と特徴
-## 1. タプル用トレイト（{TraitName}Tuple）の自動生成
-付与されたトレイト定義を解析し、戻り値をすべて配列（[T; N]）に変換した新しいタプル用トレイトを自動的に定義します。
+- **一括操作**: 複数の異なる型（同じトレイトを実装しているもの）をタプルにすると、一括でメソッドを呼び出せるようになります。
+- **配列での値収集**: 各要素の戻り値を固定長配列 `[T; N]` にして返します。
+- **自動スキップ機能**: `self` の所有権を奪うメソッドや、固定長配列化できない型を返すメソッド、および `#[skip_gtuple]` が付与されたメソッドをタプル用コードから除外します。
+- **柔軟なサイズ範囲**: 生成するタプルの要素数範囲を `#[gtuple(min, max)]` で指定可能です（デフォルトは `2..=12`）。
 
-戻り値があるメソッド：Ret $\rightarrow$ [Ret; N]（配列として一括取得）
-戻り値がないメソッド：配列化せず、各要素に対して順番に実行（セミコロン区切りで順次呼び出し）
+## インストール
 
-## 2. 指定範囲のタプル実装を一括生成
-属性として任意の要素数の範囲（例：#[gtuple(2, 6)]）を指定でき、その範囲内のタプル（(&T0, &T1) から (&T0, ..., &T5) まで）に対するトレイト実装を動的に展開します。
+`Cargo.toml` の依存関係に以下を追加してください。
 
-省略時はデフォルトで $N = 1 \sim 12$ が生成されます。
-## 3. ライフタイムなどの複雑なトレイト定義
-元のメソッドが持つ型パラメータや制約をそのまま維持してタプル用トレイト側に伝搬させます。
-## 4. サポート外メソッドのスキップ
-非Sized出力のメソッドや、タプル全体へ同時に分配して呼び出せないメソッドが存在します。（静的メソッド、所有権をムーブする値渡しの引数を持つメソッドなど）
+```toml
+[dependencies]
+gtuple_monomorphization = "0.1.0"
+```
 
-自動的に、または#[skip_gtuple]属性で、タプル用トレイトの定義および実装から除外します。これにより、コンパイルエラーを防ぎます。
+# 使い方
 
-# 使用例イメージ
-```Rust
-use gtuple::gtuple;
+以下は、Alphabet トレイトに #[gtuple(2, 3)] を付与し、タプル経由でメソッドを一括実行する例です。
 
-// 1. トレイトにマクロを付与する (N = 2〜3 のタプル実装を生成)
+```rust
+use gtuple_monomorphization::gtuple;
+
+// 1. マクロを付与してトレイトを定義
 #[gtuple(2, 3)]
-pub trait Worker {
-    fn do_work(&self, hours: usize) -> String;
-    fn rest(&self);
+pub trait Alphabet {
+    fn to_char(&self) -> char;
 }
 
-// 2. 異なる型にトレイトを実装
-struct Robot;
-impl Worker for Robot { /* ... */ }
+// 2. 構造体にトレイトを実装
+struct A;
+impl Alphabet for A {
+    fn to_char(&self) -> char {
+        'A'
+    }
+}
 
-struct Human;
-impl Worker for Human { /* ... */ }
+struct B;
+impl Alphabet for B {
+    fn to_char(&self) -> char {
+        'B'
+    }
+}
 
-// 3. まとめて呼び出す
 fn main() {
-    let team = (Robot::new(), Human::new());
+    let a = A;
+    let b = B;
 
-    // [String; 2] としてそれぞれの結果が返ってくる！
-    let results: [String; 2] = team.do_work(8); 
-
-    // それぞれの rest() が順番に実行される！
-    team.rest(); 
-}
-```
-# 原理
-バニラコードでも、次のようにトレイトと、トレイトのタプルが実装すべきトレイトを定義することで、一括でトレイトの関数を実行できるようになります。
-```Rust
-// [step 0] タプルで呼び出せる用にしたいトレイト
-pub trait Processor {
-    fn execute(&mut self, arg: i32) -> i32;
-}
-// [step 1] 元トレイトに似せたタプル用トレイトを定義
-pub trait ProcessorTuple<const N: usize> {
-    fn execute(&mut self, arg: i32) -> [i32; N];
-}
-// [step 2] このように書くと、タプルから一括で関数を呼び出し、結果を受け取れる(ここでは２個と３個のタプルについて定義)
-impl<T0, T1> ProcessorTuple<2> for (T0, T1)
-where
-    T0: Processor, // step 0 のトレイトを実装した型
-    T1: Processor,
-{
-    fn execute(&mut self, arg: i32) -> [i32; 2] {
-        [self.0.execute(arg), self.1.execute(arg)]
-    }
-}
-impl<T0, T1, T2> ProcessorTuple<3> for (T0, T1, T2)
-where
-    T0: Processor, // step 0 のトレイトを実装した型
-    T1: Processor,
-    T2: Processor,
-{
-    fn execute(&mut self, arg: i32) -> [i32; 3] {
-        [
-            self.0.execute(arg),
-            self.1.execute(arg),
-            self.2.execute(arg),
-        ]
-    }
+    // 不変参照のタプルから各要素の to_char を一括実行し、配列として取得
+    let chars: [char; 2] = (&a, &b).to_char();
+    assert_eq!(chars, ['A', 'B']);
 }
 ```
 
-# マクロ定義はGeminiに丸投げ
-私は手続きマクロを書けない(勉強したくない)ので、Geminiに丸投げしました。次のコードを張り付け、「コメントに指定した要件を満たす手続きマクロ"gtuple"を作成してください」
-```Rust
+「マクロ展開後のコード」と同等なコード例は以下の通りです：
 
-#[gtuple(2, 3)]
-pub trait Processor<T, W>
-where
-    W: Sized + Default,
-{
-    fn t_some(&self, arg: &T) -> W;
-    fn lifetime<'a, A>(&self) -> &'a mut A;
-    fn num_some(&mut self, num: usize) -> usize;
-    fn no_ret(&self);
-    fn new(arg: u32); //staticメソッドは、タプル用トレイトに含めない
-    fn move_any(&self, vec: Vec<usize>); // 所有権が移動する入力を持つ場合は、タプル用トレイトに含めない
-    #[skip_gtuple]
-    fn ignore(&self); //skipを指定されたメソッドも、タプル用トレイトに含めない
+```rust
+// 1. 元のトレイト
+pub trait Alphabet {
+    fn to_char(&self) -> char;
 }
-// 上記のようにトレイト定義をマクロに入力すると、そのトレイト定義を行って以下のようなコードを生成する
 
+// 2. マクロによって生成される &self 用のタプルトレイト
+//    (戻り値が `char` から配列 `[char; N]` に変化します)
+pub trait AlphabetTuple<const N: usize> {
+    fn to_char(&self) -> [char; N];
+}
 
-// 入力された定義に合わせた{入力マクロ名}+Tupleという名前の、入力マクロに似せた「タプル用トレイト」の定義を生成
-pub trait ProcessorTuple<const N: usize, T, W>
-where
-    W: Sized + Default,
-{
-    fn t_some(&self, arg: &T) -> [W; N];
-    fn lifetime<'a, A>(&self) -> [&'a mut A; N];
-    fn num_some(&mut self, num: usize) -> [usize; N];
-    fn no_ret(&self) -> [(); N];
+// 3. マクロによって生成される &mut self 用のタプルトレイト
+pub trait AlphabetMutTuple<const N: usize> {
+    fn to_char(&self) -> [char; N];
 }
-// #[gtuple(2, 3)]で指定された下限と上限の間にあるNに関して、次のようにタプル用トレイトをタプルに実装する
-impl<T0, T1, T, W> ProcessorTuple<2, T, W> for (T0, T1)
+
+// 4. マクロによって自動生成される実装 (要素数 N=2 の例) ---
+impl<'__tuple_macro_lt, T0, T1> AlphabetTuple<2> for (&'__tuple_macro_lt T0, &'__tuple_macro_lt T1)
 where
-    T0: Processor<T, W>,
-    T1: Processor<T, W>,
-    W: Sized + Default,
+    T0: Alphabet,
+    T1: Alphabet,
 {
-    fn t_some(&self, arg: &T) -> [W; 2] {
-        [self.0.t_some(arg), self.1.t_some(arg)]
-    }
-    fn lifetime<'a, A>(&self) -> [&'a mut A; 2] {
-        [self.0.lifetime(), self.1.lifetime()]
-    }
-    fn num_some(&mut self, num: usize) -> [usize; 2] {
-        [self.0.num_some(num), self.1.num_some(num)]
-    }
-    fn no_ret(&self) -> [(); 2] {
-        [self.0.no_ret(), self.1.no_ret()]
-    }
-}
-impl<T0, T1, T2, T, W> ProcessorTuple<3, T, W> for (T0, T1, T2)
-where
-    T0: Processor<T, W>,
-    T1: Processor<T, W>,
-    T2: Processor<T, W>,
-    W: Sized + Default,
-{
-    fn t_some(&self, arg: &T) -> [W; 3] {
-        [self.0.t_some(arg), self.1.t_some(arg), self.2.t_some(arg)]
-    }
-    fn lifetime<'a, A>(&self) -> [&'a mut A; 3] {
-        [self.0.lifetime(), self.1.lifetime(), self.2.lifetime()]
-    }
-    fn num_some(&mut self, num: usize) -> [usize; 3] {
-        [
-            self.0.num_some(num),
-            self.1.num_some(num),
-            self.2.num_some(num),
-        ]
-    }
-    fn no_ret(&self) -> [(); 3] {
-        [self.0.no_ret(), self.1.no_ret(), self.2.no_ret()]
+    fn to_char(&self) -> [char; 2] {
+        [self.0.to_char(), self.1.to_char()]
     }
 }
 
+// --- 構造体の実装 ---
+struct A;
+impl Alphabet for A {
+    fn to_char(&self) -> char { 'A' }
+}
+
+struct B;
+impl Alphabet for B {
+    fn to_char(&self) -> char { 'B' }
+}
+
+let a = A;
+let b = B;
+
+// タプル参照に対して AlphabetTuple::to_char が呼び出されます
+assert_eq!((&a, &b).to_char(), ['A', 'B']);
 ```
+
+# ライセンス
+
+このプロジェクトは、MITライセンス または Apache License 2.0ライセンス の下で公開されています。
