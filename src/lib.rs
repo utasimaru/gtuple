@@ -1,8 +1,93 @@
+//! # gtuple_monomorphization
+//! `gtuple_monomorphization` は、「同じトレイトの複数の異なる型」をタプルにしたときに、一括でメソッドを呼び出せるようにする属性マクロです。
+//!
+//! # 1. 基本的な使用例
+//!
+//! ```rust
+//! use gtuple::gtuple;
+//!
+//! #[gtuple(1, 2)]
+//! pub trait Alphabet {
+//!     fn to_char(&self) -> char;
+//! }
+//!
+//! struct A;
+//! impl Alphabet for A {
+//!     fn to_char(&self) -> char { 'A' }
+//! }
+//!
+//! struct B;
+//! impl Alphabet for B {
+//!     fn to_char(&self) -> char { 'B' }
+//! }
+//!
+//! let a = A;
+//! let b = B;
+//!
+//! // 不変参照のタプルに対して一括適用し、配列で取得
+//! assert_eq!((&a, &b).to_char(), ['A', 'B']);
+//! ```
+//!
+//! # 2. マクロによってどのように展開されるか
+//!
+//! 例として、Alphabetトレイトに `#[gtuple]` を付与した場合、マクロ内部では元々の `Alphabet` トレイトに加えて
+//! **`AlphabetTuple<const N: usize>`** および **`AlphabetMutTuple<const N: usize>`** が自動生成され、
+//! タプル型 `(&T0, &T1)` 等に対して実装が生成されます。
+//!
+//! 手動で書いた場合の「マクロ展開後のコード」と同等なコード例は以下の通りです：
+//!
+//! ```rust
+//! // 1. 元のトレイト
+//! pub trait Alphabet {
+//!     fn to_char(&self) -> char;
+//! }
+//!
+//! // 2. マクロによって生成される &self 用のタプルトレイト
+//! //    (戻り値が `char` から配列 `[char; N]` に変化します)
+//! pub trait AlphabetTuple<const N: usize> {
+//!     fn to_char(&self) -> [char; N];
+//! }
+//!
+//! // 3. マクロによって生成される &mut self 用のタプルトレイト
+//! pub trait AlphabetMutTuple<const N: usize> {
+//!     fn to_char(&self) -> [char; N];
+//! }
+//!
+//! // 4. マクロによって自動生成される実装 (要素数 N=2 の例) ---
+//! impl<'__tuple_macro_lt, T0, T1> AlphabetTuple<2> for (&'__tuple_macro_lt T0, &'__tuple_macro_lt T1)
+//! where
+//!     T0: Alphabet,
+//!     T1: Alphabet,
+//! {
+//!     fn to_char(&self) -> [char; 2] {
+//!         [self.0.to_char(), self.1.to_char()]
+//!     }
+//! }
+//!
+//! // --- 構造体の実装 ---
+//! struct A;
+//! impl Alphabet for A {
+//!     fn to_char(&self) -> char { 'A' }
+//! }
+//!
+//! struct B;
+//! impl Alphabet for B {
+//!     fn to_char(&self) -> char { 'B' }
+//! }
+//!
+//! let a = A;
+//! let b = B;
+//!
+//! // タプル参照に対して AlphabetTuple::to_char が呼び出されます
+//! assert_eq!((&a, &b).to_char(), ['A', 'B']);
+//! ```
+
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream, Result};
 use syn::{ItemTrait, LitInt, ReturnType, Token, TraitItem, parse_macro_input};
 
+/// 戻り値がユニット型 `()` (または明示的な `Default`) であるか判定するヘルパー。
 fn is_unit(output: &ReturnType) -> bool {
     match output {
         ReturnType::Default => true,
@@ -12,6 +97,7 @@ fn is_unit(output: &ReturnType) -> bool {
     }
 }
 
+/// 引数の型が「各要素へ分配不可能（Moveが必要）」かどうかを判定します。
 fn is_not_distributable(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Reference(_) => false,
@@ -33,6 +119,7 @@ fn is_not_distributable(ty: &syn::Type) -> bool {
     }
 }
 
+/// 戻り値の型が Sized でない、または固定長配列 `[T; N]` にパック不可能な型であるか判定します。
 fn is_unsized_or_unmappable_type(ty: &syn::Type) -> bool {
     match ty {
         syn::Type::Slice(_) => true,
@@ -40,10 +127,7 @@ fn is_unsized_or_unmappable_type(ty: &syn::Type) -> bool {
         syn::Type::Path(type_path) => {
             if let Some(ident) = type_path.path.get_ident() {
                 let name = ident.to_string();
-                if name == "str" {
-                    return true;
-                }
-                if name == "Self" {
+                if name == "str" || name == "Self" {
                     return true;
                 }
             }
@@ -53,8 +137,8 @@ fn is_unsized_or_unmappable_type(ty: &syn::Type) -> bool {
     }
 }
 
+/// 指定されたトレイトメソッドがタプル実装の対象からスキップされるべきかを判定します。
 fn should_skip_method(method: &syn::TraitItemFn) -> bool {
-    // 0. 明示的なスキップ属性
     if method
         .attrs
         .iter()
@@ -66,7 +150,6 @@ fn should_skip_method(method: &syn::TraitItemFn) -> bool {
     let sig = &method.sig;
     let inputs = &sig.inputs;
 
-    // 1. スタティックメソッド、または self の所有権を奪う場合を除外
     match inputs.first() {
         Some(syn::FnArg::Receiver(recv)) => {
             if recv.reference.is_none() {
@@ -76,7 +159,6 @@ fn should_skip_method(method: &syn::TraitItemFn) -> bool {
         _ => return true,
     }
 
-    // 2. 引数に move するものがないかチェック
     for arg in inputs.iter().skip(1) {
         if let syn::FnArg::Typed(pat_type) = arg {
             if is_not_distributable(&pat_type.ty) {
@@ -85,7 +167,6 @@ fn should_skip_method(method: &syn::TraitItemFn) -> bool {
         }
     }
 
-    // 3. 戻り値が Sized でない、または配列化不可能な型かチェック
     if let ReturnType::Type(_, ty) = &sig.output {
         if is_unsized_or_unmappable_type(ty) {
             return true;
@@ -95,7 +176,7 @@ fn should_skip_method(method: &syn::TraitItemFn) -> bool {
     false
 }
 
-// 参照のミュータビリティを判定するヘルパー
+/// メソッドのレシーバが可変参照 (`&mut self`) かどうか判定するヘルパー。
 fn is_mut_method(method: &syn::TraitItemFn) -> bool {
     if let Some(syn::FnArg::Receiver(recv)) = method.sig.inputs.first() {
         recv.mutability.is_some()
@@ -104,6 +185,7 @@ fn is_mut_method(method: &syn::TraitItemFn) -> bool {
     }
 }
 
+/// マクロに引き渡されるタプル要素数の範囲引数をパースする構造体。
 struct RangeArgs {
     start: usize,
     end: usize,
@@ -112,7 +194,7 @@ struct RangeArgs {
 impl Parse for RangeArgs {
     fn parse(input: ParseStream) -> Result<Self> {
         if input.is_empty() {
-            return Ok(RangeArgs { start: 1, end: 12 });
+            return Ok(RangeArgs { start: 2, end: 12 });
         }
         let start_lit: LitInt = input.parse()?;
         let start = start_lit.base10_parse::<usize>()?;
@@ -126,6 +208,50 @@ impl Parse for RangeArgs {
     }
 }
 
+/// トレイトに対して、参照のタプル (`(&T1, &T2, ...)` / `(&mut T1, &mut T2, ...)`) 向けの一括実行用トレイトと実装を自動生成します。
+///
+/// # 引数
+/// * `start, end` (任意): 生成対象とするタプルの最小・最大要素数。指定しない場合のデフォルトは `1, 12` です。
+///
+/// # 生成されるトレイト
+/// 対象のトレイト名を `Foo` とした場合、以下の2つのトレイトが生成されます：
+/// * **`FooTuple<const N: usize>`**: `&self` メソッドを集約して実行するトレイト。
+/// * **`FooMutTuple<const N: usize>`**: `&mut self` メソッドを集約して実行するトレイト。
+///
+/// # メソッド戻り値の変換ルール
+/// * **ユニット型 (`()`)**: 各要素のメソッドを順番に実行します（戻り値なし）。
+/// * **値を持つ型 (`T`)**: 各要素のメソッドの戻り値を要素数 `N` の固定長配列 `[T; N]` として返します。
+///
+/// # Examples
+///
+/// ```rust
+/// use gtuple::gtuple;
+
+/// #[gtuple(1, 2)]
+/// pub trait Alphabet {
+///     fn to_char(&self) -> char;
+/// }
+///
+/// struct A;
+/// impl Alphabet for A {
+///     fn to_char(&self) -> char {
+///         'A'
+///     }
+/// }
+///
+/// struct B;
+/// impl Alphabet for B {
+///     fn to_char(&self) -> char {
+///         'B'
+///     }
+/// }
+///
+/// let a = A;
+/// let b = B;
+///
+/// // 不変参照のタプルから各要素の to_char を一括実行し、配列として結果を取得
+/// assert_eq!((&a, &b).to_char(), ['A', 'B']);
+/// ```
 #[proc_macro_attribute]
 pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as RangeArgs);
@@ -156,7 +282,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // メソッドを &self 用と &mut self 用に分別する
     let mut ref_methods_orig = Vec::new();
     let mut mut_methods_orig = Vec::new();
 
@@ -197,7 +322,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(transform_to_trait_item)
         .collect();
 
-    // 1. 不変参照用のタプルトレイト (TraitTuple) の構築
     let ref_tuple_trait_ident = format_ident!("{}Tuple", trait_ident);
     let mut ref_tuple_trait = input_trait.clone();
     ref_tuple_trait.ident = ref_tuple_trait_ident.clone();
@@ -207,7 +331,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
         .insert(0, syn::parse_quote!(const N: usize));
     ref_tuple_trait.items = ref_trait_items;
 
-    // 2. 可変参照用のタプルトレイト (TraitMutTuple) の構築
     let mut_tuple_trait_ident = format_ident!("{}MutTuple", trait_ident);
     let mut mut_tuple_trait = input_trait.clone();
     mut_tuple_trait.ident = mut_tuple_trait_ident.clone();
@@ -242,7 +365,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .push(syn::parse_quote!(#t_ident: #trait_ident <#(#generic_args),*>));
         }
 
-        // 実装メソッドを生成するクロージャ
         let generate_impl_method = |method: &syn::TraitItemFn| -> proc_macro2::TokenStream {
             let sig = &method.sig;
             let method_ident = &sig.ident;
@@ -289,7 +411,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
         let mut_tuple = quote!( (#(&'__tuple_macro_lt mut #tuple_idents,)*) );
         let ref_tuple = quote!( (#(&'__tuple_macro_lt #tuple_idents,)*) );
 
-        // [実装A] 不変参照タプルに TraitTuple(&self のみ) を実装
         impls.push(quote! {
             impl #ref_impl_generics #ref_tuple_trait_ident <#n, #(#generic_args),*> for #ref_tuple
             #impl_where
@@ -298,7 +419,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         });
 
-        // [実装B] 可変参照タプルにも TraitTuple(&self のみ) を実装
         impls.push(quote! {
             impl #ref_impl_generics #ref_tuple_trait_ident <#n, #(#generic_args),*> for #mut_tuple
             #impl_where
@@ -307,7 +427,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         });
 
-        // [実装C] 可変参照タプルに TraitMutTuple(&mut self のみ) を実装 (存在する場合)
         if !mut_methods_orig.is_empty() {
             impls.push(quote! {
                 impl #ref_impl_generics #mut_tuple_trait_ident <#n, #(#generic_args),*> for #mut_tuple
@@ -319,7 +438,6 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // 元のトレイトから `#[tuple_skip]` を消去
     for item in &mut input_trait.items {
         if let TraitItem::Fn(method) = item {
             method
@@ -328,18 +446,11 @@ pub fn gtuple(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // トレイトと実装を結合して出力
     let mut expanded = quote! {
         #input_trait
         #ref_tuple_trait
         #mut_tuple_trait
     };
-    /*
-    if !mut_methods_orig.is_empty() {
-        expanded.extend(quote! {
-            #mut_tuple_trait
-        });
-    }*/
 
     expanded.extend(quote! {
         #(#impls)*
