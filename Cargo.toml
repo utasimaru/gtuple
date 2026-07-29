@@ -7,12 +7,12 @@ edition = "2024"
 # crates.io 公開用の必須・推奨メタデータ
 # --------------------------------------------------
 description = "A proc-macro attribute to distribute trait methods over tuples of references."
-license = "MIT OR Apache-2.0" # オープンソースで最も標準的なデュアルライセンス表記
-authors = ["utasimaru <utasimaru@yahoo.co.jp>"] # ※ご自身の情報に変更してください
-repository = "https://github.com/utasimaru/gtuple_monomorphization" # ※リポジトリURLに変更してください
-readme = "README.md" # パッケージ直下にREADME.mdを作成してください
-keywords = ["proc-macro", "tuple", "trait", "macro"] # crates.ioでの検索用タグ（最大5つ）
-categories = ["rust-patterns"] # 分類カテゴリ
+license = "MIT OR Apache-2.0"
+authors = ["utasimaru <utasimaru@yahoo.co.jp>"] 
+repository = "https://github.com/utasimaru/gtuple_monomorphization" 
+readme = "README.md" 
+keywords = ["proc-macro", "tuple", "trait", "macro"] 
+categories = ["rust-patterns"] 
 
 [lib]
 proc-macro = true
